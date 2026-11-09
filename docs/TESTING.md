@@ -3,32 +3,37 @@
 ## Running
 
 ```sh
-go test -cover .          # tests with coverage summary
-go run ./scripts/check    # every gate, as CI and the factory run it
+go test ./...
+go test -race ./...
 ```
+
+`go test -race` must pass.
 
 ## Policy
 
-- Statement coverage of the library (every package except `scripts/`) must stay at or above 80 %;
-  the gate fails below it.
-- Tests live in package `gracefulshutdown_test` and exercise the public API only. They assert every
-  observable effect: return values, returned errors (`errors.Is`) and their messages.
-- Prefer table-driven tests with `t.Run` subtests; document usage with runnable `Example`
-  functions, which `go test` verifies through their `// Output:` comments.
-- The race detector runs whenever cgo and a C compiler are available (always in Linux CI); the
-  gate prints why when it has to run without it.
+- Tests exercise the public API in package `gracefulshutdown_test`.
+- Tests are deterministic: no network, no wall clock, no dependence on test order. Real timers appear only in timeout tests, with 20 ms timeouts, 1 s bounds, and a 50x margin.
 - Each bug fix starts with a failing test that reproduces it.
-- Tests are deterministic: no network, no wall clock, no dependence on test order.
+- The suite must cover the shutdown behavior and edge cases listed below.
+- No individual test file names are given in the supplied code snapshot; test files use Go's `*_test.go` convention beside the package.
+
+## Coverage
+
+- Phase order: with `http` (phase 1), `cache` (phase 1), and `db` (phase 2), `Shutdown(ctx)` starts `http` and `cache` before `db`; `db` starts only after both phase 1 hooks return; `Shutdown` returns `nil`.
+- Readiness and pre-stop: `Ready()` is true before `Shutdown`; with `PreStopDelay` `5 * time.Second` and an injected `Sleep`, `Ready()` is already false when `Sleep` is called, and `Sleep` receives exactly `5 * time.Second`.
+- Errors and panics: if `http` returns `errBoom` and `db` panics with `kaboom`, `Shutdown` returns an error where `errors.Is(err, errBoom)` is true and `errors.As` finds an `*Error` with code `hook_panic` and hook `db`; joined errors keep registration order.
+- Per-hook timeout: a hook `stuck` with timeout `20 * time.Millisecond` that ignores its context makes `Shutdown` report an `*Error` with code `hook_timeout` and hook `stuck`; the next phase still runs; `Shutdown` returns in less than `1 * time.Second`.
+- Shutdown-context cancellation: when the context passed to `Shutdown` is cancelled during phase 1, phase 2 hooks are never called and each is reported as an `*Error` with code `skipped`.
+- Registration and repeat calls: a second `Shutdown` call made while the first runs blocks until it finishes and returns the same error; `Register` after shutdown started returns code `shutting_down`; an empty name, a nil function, or a timeout `<= 0` returns code `invalid_hook`; a repeated name returns code `duplicate_hook`.
+- Signals: `WaitForSignal(ctx, sigs, m, 30 * time.Second)` runs `Shutdown` after one value on `sigs`; when a hook blocks until its context is done, a second value on `sigs` cancels the shutdown context and `WaitForSignal` returns in less than `1 * time.Second`; if `ctx` is cancelled before any signal it returns `ctx.Err()` without calling `Shutdown`.
+- HTTP draining: with `HTTPServerHook(srv)` registered, an in-flight request started before `Shutdown` completes with status 200 and `srv.Serve(listener)` returns `http.ErrServerClosed`.
+- Edge cases: shutdown with no hooks, negative phase numbers ordered before `0`, nil `OnEvent`, and `Ready()` read concurrently with `Shutdown`.
 
 ## Tiers
 
-- Local tier (every gate run, coverage measured here): unit and property tests, plus conformance on small
-  fixtures kept in the repository.
-- CI tier: conformance that needs an external tool or a download. Start the file with `//go:build conformance`; `scripts/check` adds `-tags=conformance` only in CI
-  (unless `FABRICA_CI=1`). The CI `conformance` job sets `FABRICA_CI=1` and runs the full suite. Tools are installed
-  by the optional `ci/conformance-setup.sh` (bash, CI only; verify every download against a pinned SHA-256), and
-  tagged tests skip cleanly when their tool is missing.
+- Local: public-API behavior tests, including the timeout tests that use real timers, and the race detector run with `go test -race`.
+- No external-tool conformance tier is described by the package specification; the package uses the Go standard library only.
 
 ## Layout
 
-`<file>_test.go` sits next to the file it tests. Fixtures and golden files go in `testdata/`.
+Test files use Go's `<file>_test.go` convention beside the package. No separate fixtures or testdata files are described in the supplied specification.
