@@ -9,4 +9,5 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- feat: add graceful shutdown manager with phased hooks, timeouts, panic capture, and signal handling
 - Initial project structure from the factory utility template.
